@@ -19,9 +19,9 @@ Run the script in PowerShell:
 .\api_testtool.ps1
 ```
 
-![Single API test](screenshots/Screenshot_2025-12-17_211858.png)
-![Project-wide test](screenshots/Screenshot_2025-12-17_212042.png)
-![Stress test](screenshots/Screenshot_2025-12-17_220147.png)
+![Single API test](screenshots/screenshot1.png)
+![Project-wide test](screenshots/screenshot2.png)
+![Stress test](screenshots/screenshot3.png)
 
 <p float="left">
   <img src="screenshots/screenshot1.png" width="200" />
