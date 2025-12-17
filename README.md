@@ -14,6 +14,8 @@ git clone https://github.com/JohannesWaldeck/api_testtool.git
 cd api_testtool
 ```
 ## Usage
+Export a postman collection in to a json Collection v2 
+
 Run the script in PowerShell:
 ```powershell
 .\api_testtool.ps1
