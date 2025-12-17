@@ -18,7 +18,7 @@ Run the script in PowerShell:
 ```powershell
 .\api_testtool.ps1
 ```
-![Description](screenshots/Screenshot 2025-12-17 211858.png)
-![Description](screenshots/Screenshot 2025-12-17 212042.png)
-![Description](screenshots/Screenshot 2025-12-17 220147.png)
+![Single API test](screenshots/Screenshot_2025-12-17_211858.png)
+![Project-wide test](screenshots/Screenshot_2025-12-17_212042.png)
+![Stress test](screenshots/Screenshot_2025-12-17_220147.png)
 
