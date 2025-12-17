@@ -19,13 +19,4 @@ Run the script in PowerShell:
 .\api_testtool.ps1
 ```
 
-![Single API test](screenshots/screenshot1.png)
-![Project-wide test](screenshots/screenshot2.png)
-![Stress test](screenshots/screenshot3.png)
-
-<p float="left">
-  <img src="screenshots/screenshot1.png" width="200" />
-  <img src="screenshots/screenshot2.png" width="200" />
-  <img src="screenshots/screenshot3.png" width="200" />
-</p>
 
