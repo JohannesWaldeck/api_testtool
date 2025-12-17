@@ -10,7 +10,7 @@ PowerShell script to test APIs from Postman collections, supporting single calls
 
 ## Installation
 ```powershell
-git clone https://github.com/JohannesWaldeck/api_testtool.git
+git clone https://github.com/JohannesWaldeck/api_testtool
 cd api_testtool
 ```
 ## Usage
