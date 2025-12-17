@@ -72,6 +72,35 @@ function Write-Section {
     Log-Message "----- $title -----" -Color Cyan
 }
 
+
+function Select-PostmanCollection {
+    param (
+        [string]$folderPath = $PSScriptRoot  # Automatically points to the script folder
+    )
+
+    $postmanFiles = Get-ChildItem -Path $folderPath -Filter "*.json"
+    if ($postmanFiles.Count -eq 0) {
+        Log-Message "No .json files found in $folderPath." -Color Red
+        exit
+    }
+
+    Log-Message "Please select a Postman Collection: "
+    for ($i=0; $i -lt $postmanFiles.Count; $i++) {
+        Log-Message "$($postmanFiles[$i].Name)"
+    }
+
+    $selection = Show-InteractiveFileSelection -files $postmanFiles
+    $selectedFile = $postmanFiles | Where-Object { $_.Name -eq $selection }
+    if (-not $selectedFile) {
+        Log-Message "Invalid file selection." -Color Red
+        exit
+    }
+
+    Log-Message "Selected File: $($selectedFile.Name)"
+    return $selectedFile.FullName
+}
+
+
 function Test-TCPConnection-Compact {
     param ([string]$url)
 
@@ -543,30 +572,10 @@ if ($menuKey -eq '1') {
     Log-Message "Modus: Single API"
 
     Write-Section "Postman Collection Selection"
-    $postmanFiles = Get-ChildItem -Path "C:\Users\johan\OneDrive\Dokumente" -Filter "*.json"
-
-    if ($postmanFiles.Count -eq 0) {
-        Log-Message "No .json files found." -Color Red
-        exit
-    }
-
-    Log-Message "Please select a Postman Collection: "
-    for ($i=0; $i -lt $postmanFiles.Count; $i++) {
-        Log-Message "$($postmanFiles[$i].Name)"
-    }
-
-    $selection = Show-InteractiveFileSelection -files $postmanFiles
-    $selectedFile = $postmanFiles | Where-Object { $_.Name -eq $selection }
-    if (-not $selectedFile) {
-        Log-Message "Invalid Fileselection." -Color Red
-        exit
-    }
-    $selectedFile = $selectedFile.FullName
-    Log-Message "Selected File: $selectedFile"
+	$selectedFile = Select-PostmanCollection
+	$collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
 
     Write-Section "Load Postman Collection"
-    $collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
-
     # Baum anzeigen
     Log-Message "Root"
     Print-Tree -items $collectionJson.item
@@ -689,29 +698,8 @@ elseif ($menuKey -eq '2') {
 
     if (-not $collectionJson) {
         Write-Section "Postman Collection Selection"
-        $postmanFiles = Get-ChildItem -Path . -Filter "*.json"
-
-        if ($postmanFiles.Count -eq 0) {
-            Log-Message
-			            Log-Message "No .json files found." -Color Red
-            exit
-        }
-
-        Log-Message "Please select a postman collection: "
-        for ($i=0; $i -lt $postmanFiles.Count; $i++) {
-            Log-Message "$($postmanFiles[$i].Name)"
-        }
-
-        $selection = Show-InteractiveFileSelection -files $postmanFiles
-        $selectedFile = $postmanFiles | Where-Object { $_.Name -eq $selection }
-        if (-not $selectedFile) {
-            Log-Message "Invalid Fileselection." -Color Red
-            exit
-        }
-        $selectedFile = $selectedFile.FullName
-        Log-Message "Selected File: $selectedFile"
-
-        $collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
+        $selectedFile = Select-PostmanCollection
+		$collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
     }
 
     $rootFolders = $collectionJson.item
@@ -730,28 +718,8 @@ elseif ($menuKey -eq '3') {
 
     # Postman Collection Auswahl
     Write-Section "Postman Collection Selection"
-    $postmanFiles = Get-ChildItem -Path "C:\Users\johan\OneDrive\Dokumente" -Filter "*.json"
-
-    if ($postmanFiles.Count -eq 0) {
-        Log-Message "No .json files found." -Color Red
-        exit
-    }
-
-    Log-Message "Please select a Postman Collection: "
-    for ($i=0; $i -lt $postmanFiles.Count; $i++) {
-        Log-Message "$($postmanFiles[$i].Name)"
-    }
-
-    $selection = Show-InteractiveFileSelection -files $postmanFiles
-    $selectedFile = $postmanFiles | Where-Object { $_.Name -eq $selection }
-    if (-not $selectedFile) {
-        Log-Message "Invalid Fileselection." -Color Red
-        exit
-    }
-    $selectedFile = $selectedFile.FullName
-    Log-Message "Selected File: $selectedFile"
-
-    $collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
+    $selectedFile = Select-PostmanCollection
+	$collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
 
     # Baum anzeigen
     Log-Message "Root"
