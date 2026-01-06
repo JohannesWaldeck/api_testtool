@@ -96,6 +96,8 @@ function Select-PostmanCollection {
         exit
     }
 
+    Write-Host ""   # ✅ FIX: restore newline after interactive input
+
     Log-Message "Selected File: $($selectedFile.Name)"
     return $selectedFile.FullName
 }
@@ -232,124 +234,370 @@ function Show-Request {
     }
 }
 
-function Invoke-GETRequest {
-    param ([string]$url, [hashtable]$headers)
-
-    try {
-        Write-Section "GET REQUEST"
-        Log-Message "Fetching CSRF token and cookies..."
-
-        $response = Invoke-WebRequest -Uri $url -Method Get -Headers $headers -UseBasicParsing -ErrorAction Stop
-
-        Log-Message "GET Response Headers:"
-        $response.Headers.GetEnumerator() | ForEach-Object { 
-            Log-Message "    $($_.Key): $($_.Value)" 
-        }
-
-        Log-Message "GET HTTP Response Code: $($response.StatusCode)" -Color Green
-        Log-Message "GET Status Description: $($response.StatusDescription)"
-
-        return $response
-    } catch {
-        Log-Message "Error during GET request: $_" -Color Red
-        exit 1
-    }
-}
-
-function Invoke-POSTRequest {
-    param ([string]$url, [hashtable]$headers, [string]$body)
-
-    try {
-        Write-Section "POST REQUEST"
-        Show-Request -method "POST" -url $url -headers $headers -body $body
-
-        $postResponse = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -ErrorAction Stop
-        $postResponseJson = $postResponse | ConvertTo-Json -Depth 10
-
-        Log-Message "POST request response:"
-        foreach ($line in $postResponseJson -split "`n") {
-            Log-Message $line
-        }
-    } catch {
-        Log-Message "Error during POST request: $_" -Color Red
-    }
-}
 
 function Print-Tree {
-    param([array]$items, [string]$prefix = "")
-    foreach ($item in $items) {
-        if ($item.PSObject.Properties.Name -contains "request") {
-            $url = $item.request.url
-            Log-Message "${prefix}- $($item.name) -> $url"
-        } elseif ($item.PSObject.Properties.Name -contains "item") {
-            Log-Message "${prefix}- $($item.name)"
-            Print-Tree -items $item.item -prefix ($prefix + "|   ")
+    param (
+        [array]$items,
+        [string]$prefix = "",
+        [bool]$isLast = $true
+    )
+
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $item = $items[$i]
+        $last = ($i -eq $items.Count - 1)
+
+        # Tree symbols
+        $branch = if ($last) { "\-- " } else { "+-- " }
+        $nextPrefix = if ($last) { "    " } else { "|   " }
+
+        # FOLDER
+        if ($item.PSObject.Properties.Name -contains "item") {
+            Log-Message "$prefix$branch$($item.name)"
+            Print-Tree `
+                -items $item.item `
+                -prefix ($prefix + $nextPrefix) `
+                -isLast $last
+        }
+
+        # REQUEST
+        elseif ($item.PSObject.Properties.Name -contains "request") {
+            $method = $item.request.method.ToUpper()
+            Log-Message "$prefix$branch[$method] $($item.name)"
         }
     }
 }
 
-function Print-Tree-With-Execution {
-    param([array]$items, [string]$prefix = "")
-    foreach ($item in $items) {
-        # FOLDER
-        if ($item.PSObject.Properties.Name -contains "item") {
-            Log-Message "${prefix}- $($item.name)"
-            Print-Tree-With-Execution -items $item.item -prefix ($prefix + "|   ")
+
+function Format-UriFixedWidth {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Uri,
+
+        [int]$MaxLength = 34
+    )
+
+    if (-not $Uri) { return "" }
+
+    if ($Uri.Length -le $MaxLength) {
+        return $Uri
+    }
+
+    # Always show first 30, "..", last 3
+    return $Uri.Substring(0, 30) + ".." + $Uri.Substring($Uri.Length - 3)
+}
+
+
+function Get-MaxLengths {
+    param(
+        [array]$items,
+        [string]$prefix = ""
+    )
+
+    foreach ($i in $items) {
+        $isLast = ($i -eq $items[-1])
+        $branch = if ($isLast) { "\-- " } else { "+-- " }
+        $nextPrefix = if ($isLast) { $prefix + "    " } else { $prefix + "|   " }
+
+        if ($i.PSObject.Properties.Name -contains "request") {
+
+            # --- TREE / NAME ---
+            $leftText = "$prefix$branch$($i.name)"
+            $global:maxLeftLength = [Math]::Max($global:maxLeftLength, $leftText.Length)
+
+            # --- METHOD ---
+            $method = $i.request.method.ToUpper()
+            $global:maxMethodLength = [Math]::Max($global:maxMethodLength, $method.Length)
+
+            # --- TRY TO GET STATUS / TIME / TCP / URL ---
+            $url = $null
+            if ($i.request.url -is [string]) { $url = $i.request.url }
+            elseif ($i.request.url -and $i.request.url.raw) { $url = $i.request.url.raw }
+            elseif ($i.request.url -and $i.request.url.href) { $url = $i.request.url.href }
+            else { $url = "<unknown>" }
+
+            try {
+                $result = Invoke-Request-With-Metrics -Url $url -Method $method
+                $statusCode = $result.Status
+                $timeMs     = $result.TimeMs
+                $tcp        = $result.Tcp
+                $responseUrl = if ($result.Response -and $result.Response.BaseResponse) { $result.Response.BaseResponse.ResponseUri.AbsoluteUri } else { $url }
+            } catch {
+                $statusCode = "ERR"
+                $timeMs     = "n/a"
+                $tcp        = "FAIL"
+                $responseUrl = $url
+            }
+
+            # --- CALCULATE MAX LENGTHS ---
+            $global:maxStatusLength = [Math]::Max($global:maxStatusLength, ($statusCode.ToString()).Length)
+            $global:maxTimeLength   = [Math]::Max($global:maxTimeLength, ("${timeMs}ms").Length)
+            $global:maxTcpLength    = [Math]::Max($global:maxTcpLength, $tcp.Length)
+            $global:maxUrlLength    = [Math]::Max($global:maxUrlLength, $responseUrl.Length)
         }
+
+        if ($i.PSObject.Properties.Name -contains "item") {
+            Get-MaxLengths -items $i.item -prefix $nextPrefix
+        }
+    }
+}
+
+
+
+
+# ==========================================================
+# FULL Print-Tree-With-Execution WITH METHOD & STATUS ALIGNMENT
+# ==========================================================
+function Print-Tree-With-Execution {
+    param(
+        [array]$items,
+        [object]$collection,
+        [string]$prefix = "",
+        [bool]$isLast = $true
+    )
+
+    # -------------------------------
+    # Initialize globals if not set
+    # -------------------------------
+    if (-not $global:maxLeftLength)   { $global:maxLeftLength = 0 }
+    if (-not $global:maxMethodLength) { $global:maxMethodLength = 0 }
+    if (-not $global:maxStatusLength) { $global:maxStatusLength = 0 }
+    if (-not $global:maxTimeLength)   { $global:maxTimeLength = 0 }
+    if (-not $global:maxTcpLength)    { $global:maxTcpLength = 0 }
+    if (-not $global:lineCounter)     { $global:lineCounter = 1 }
+
+    # -------------------------------
+    # First pass → calculate alignment
+    # -------------------------------
+    Get-MaxLengths -items $items -prefix $prefix
+
+    # -------------------------------
+    # Print tree
+    # -------------------------------
+    for ($i = 0; $i -lt $items.Count; $i++) {
+
+        $item = $items[$i]
+        $last = ($i -eq $items.Count - 1)
+
+        $branch     = if ($last) { "\-- " } else { "+-- " }
+        $nextPrefix = if ($last) { $prefix + "    " } else { $prefix + "|   " }
+
+        # -------------------------
+        # FOLDER
+        # -------------------------
+        if ($item.PSObject.Properties.Name -contains "item") {
+            Log-Message "$prefix$branch$($item.name)"
+            Print-Tree-With-Execution `
+                -items $item.item `
+                -collection $collection `
+                -prefix $nextPrefix `
+                -isLast $last
+            continue
+        }
+
+        # -------------------------
         # REQUEST
-        elseif ($item.PSObject.Properties.Name -contains "request") {
-            # URL sauber ermitteln
+        # -------------------------
+        if ($item.PSObject.Properties.Name -contains "request") {
+
+            $method = $item.request.method.ToUpper()
+
+            $authHeader = Resolve-Auth -request $item -collection $collection
+            $headers = @{} + $authHeader
+
+            $body = ""
+            if ($method -in @("POST","PUT","PATCH") -and $item.request.body) {
+                if ($item.request.body.mode -eq "raw") {
+                    $body = $item.request.body.raw
+                }
+            }
+
+            # --- URL ---
             if ($item.request.url -is [string]) {
                 $url = $item.request.url
-            } elseif ($item.request.url.raw) {
+            }
+            elseif ($item.request.url -and $item.request.url.raw) {
                 $url = $item.request.url.raw
-            } elseif ($item.request.url.href) {
+            }
+            elseif ($item.request.url -and $item.request.url.href) {
                 $url = $item.request.url.href
-            } else {
+            }
+            else {
                 $url = "<unknown>"
             }
-			
-			$method = $item.request.method.ToUpper()
-            # Request ausführen und Metriken
-            $result = Invoke-Request-With-Metrics -url $url -method $method
-			
-			switch ($method) {
-				"GET"  { $methodColor = "Green" }
-				"POST" { $methodColor = "DarkYellow" }
-				default { $methodColor = "White" }
-			}
 
-            # Statusfarbe bestimmen
+            # --- EXECUTE ---
+            $result = Invoke-Request-With-Metrics `
+                -Url $url `
+                -Method $method `
+                -Headers $headers `
+                -Body $body
+
             $statusCode = $result.Status
-            $timeMs = $result.TimeMs
-			$tcp    = $result.Tcp
-            if ($statusCode -eq 200) { $statusColor = "Green" } else { $statusColor = "Red" }
+            $timeMs     = $result.TimeMs
+            $tcp        = $result.Tcp
 
-            # Zeile bauen
-            $linePrefix = "${prefix}- $($item.name) "
-			$methodTag  = "[$method] "
-			$lineAfter  = "-> $url ["
-            $lineSuffix = "] ${timeMs}ms | $tcp"
+            if ($result.Response -and $result.Response.BaseResponse) {
+                $responseUrl = $result.Response.BaseResponse.ResponseUri.AbsoluteUri
+            } else {
+                $responseUrl = $url
+            }
 
-            # Console-Ausgabe mit farbigem Statuscode
+            # --- COLORS ---
+            switch ($method) {
+                "GET"  { $methodColor = "Green" }
+                "POST" { $methodColor = "DarkYellow" }
+                default { $methodColor = "White" }
+            }
+
+            if ($statusCode -ge 200 -and $statusCode -lt 300) {
+                $statusColor = "Green"
+            } else {
+                $statusColor = "Red"
+            }
+
+            if ($tcp -match "OK") {
+                $tcpColor = "Green"
+            } else {
+                $tcpColor = "Red"
+            }
+
+            # --- SHORT URL ---
+            try {
+                $uri = [System.Uri]$responseUrl
+                $segments = $uri.AbsolutePath.Trim("/").Split("/")
+
+                if ($segments.Count -ge 2) {
+                    $shortPath = "/" + ($segments[-2..-1] -join "/")
+                } else {
+                    $shortPath = $uri.AbsolutePath
+                }
+
+                $shortUrl = "$($uri.Scheme)://$($uri.Host)$shortPath"
+            }
+            catch {
+                $shortUrl = $responseUrl
+            }
+
+            # --- FINAL URL FORMAT (NO POWERSHELL ELLIPSIS) ---
+            $displayUrl = Format-UriFixedWidth -Uri $shortUrl -MaxLength 34
+
+            # --- ALIGNMENT ---
+            $leftText = "$prefix$branch$($item.name)"
+            $padding1 = " " * ($global:maxLeftLength - $leftText.Length + 1)
+
+            $methodPadded = $method + " " * ($global:maxMethodLength - $method.Length)
+            $statusText   = $statusCode.ToString()
+            $statusPadded = $statusText + " " * ($global:maxStatusLength - $statusText.Length)
+            $timeText     = "${timeMs}ms"
+            $timePadded   = $timeText + " " * ($global:maxTimeLength - $timeText.Length)
+            $tcpPadded    = $tcp + " " * ($global:maxTcpLength - $tcp.Length)
+
+            # --- OUTPUT ---
             $lineNumStr = "<Line Nr. {0:D3}> " -f $global:lineCounter
             Write-Host -NoNewline $lineNumStr
-			Write-Host -NoNewline $linePrefix
-			Write-Host -NoNewline $methodTag -ForegroundColor $methodColor
-			Write-Host -NoNewline $lineAfter
-			Write-Host -NoNewline $statusCode -ForegroundColor $statusColor
-			Write-Host $lineSuffix
+            Write-Host -NoNewline "$leftText$padding1["
+            Write-Host -NoNewline $methodPadded -ForegroundColor $methodColor
+            Write-Host -NoNewline "] ["
+            Write-Host -NoNewline $statusPadded -ForegroundColor $statusColor
+            Write-Host -NoNewline "] $timePadded | "
+            Write-Host -NoNewline $tcpPadded -ForegroundColor $tcpColor
+            Write-Host " | $displayUrl"
 
-            # Logfile
-            $linePrefix + $statusCode + $lineSuffix | Out-File -Append -FilePath "log.txt"
+            # --- LOG ---
+            "$leftText [$methodPadded] [$statusPadded] $timePadded | TCP $tcpPadded | $displayUrl" |
+                Out-File -Append -FilePath "log.txt"
 
             $global:lineCounter++
         }
     }
 }
 
+
+
+function Read-InteractiveSelection {
+    param (
+        [string]$Prompt,
+        [string[]]$Values
+    )
+
+    if (-not $Values -or $Values.Count -eq 0) { return }
+
+    $inputBuffer = ""
+    $startPos = $Host.UI.RawUI.CursorPosition
+    $matchIndex = 0
+
+    Write-Host $Prompt -NoNewline
+
+    while ($true) {
+        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+        switch ($key.VirtualKeyCode) {
+
+            13 { # ENTER
+                if ($Values -contains $inputBuffer) {
+                    return $inputBuffer
+                }
+            }
+
+            9 { # TAB → autocomplete / cycle
+
+                # 🔑 CORE FIX:
+                # If input is a full match → cycle through ALL values
+                if ($Values -contains $inputBuffer) {
+                    $matches = $Values
+                } else {
+                    $matches = @($Values | Where-Object { $_.StartsWith($inputBuffer) })
+                }
+
+                if ($matches.Count -eq 0) { break }
+
+                if ($matches -contains $inputBuffer) {
+                    $matchIndex = ($matchIndex + 1) % $matches.Count
+                } else {
+                    $matchIndex = 0
+                }
+
+                $inputBuffer = $matches[$matchIndex]
+            }
+
+            8 { # BACKSPACE
+                if ($inputBuffer.Length -gt 0) {
+                    $inputBuffer = $inputBuffer.Substring(0, $inputBuffer.Length - 1)
+                    $matchIndex = 0
+                }
+            }
+
+            default {
+                if ($key.Character -and $key.Character -ne "`0") {
+                    $inputBuffer += $key.Character
+                    $matchIndex = 0
+                }
+            }
+        }
+
+        # Vorschau (UNCHANGED, incl. [+tab])
+        $preview = @($Values | Where-Object { $_.StartsWith($inputBuffer) })
+        $suggestion = ""
+        if ($preview.Count -gt 0 -and $preview[0] -ne $inputBuffer) {
+            $suggestion = $preview[0].Substring($inputBuffer.Length) + " [+tab]"
+        }
+
+        # redraw
+        $Host.UI.RawUI.CursorPosition = $startPos
+        Write-Host -NoNewline (" " * ($Host.UI.RawUI.WindowSize.Width - 1))
+        $Host.UI.RawUI.CursorPosition = $startPos
+
+        Write-Host -NoNewline "$Prompt$inputBuffer"
+        if ($suggestion) {
+            Write-Host -NoNewline $suggestion -ForegroundColor DarkGray
+        }
+    }
+}
+
+
+
 # ==========================================================
-# ⭐ TAB-Autocomplete (inline, first match only)
+# ⭐ TAB-Autocomplete (inline, first match only + cycling)
 # ==========================================================
 function Show-InteractiveTree {
     param ([array]$items)
@@ -358,7 +606,10 @@ function Show-InteractiveTree {
         $out = @()
         foreach ($i in $items) {
             if ($i.PSObject.Properties.Name -contains "request") {
-                $out += [PSCustomObject]@{ Object = $i; Name = $i.name.Trim() }
+                $out += [PSCustomObject]@{
+                    Name   = $i.name.Trim()
+                    Object = $i
+                }
             }
             if ($i.PSObject.Properties.Name -contains "item") {
                 $out += Flatten-Tree -items $i.item
@@ -367,59 +618,23 @@ function Show-InteractiveTree {
         return $out
     }
 
-    $flatItems = @(Flatten-Tree -items $items)
-    if ($flatItems.Count -eq 0) { return }
+    $flat = @(Flatten-Tree -items $items)
+    if ($flat.Count -eq 0) { return }
 
-    $inputBuffer = ""
-    $startPos = $Host.UI.RawUI.CursorPosition
+    # ⬅ allow N as escape
+    $names = $flat.Name + 'N'
 
-    Write-Host "Please input an API: " -NoNewline
+    $selectedName = Read-InteractiveSelection `
+        -Prompt "Please input an API (or N to go back): " `
+        -Values $names
 
-    while ($true) {
-        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    if (-not $selectedName) { return }
 
-        switch ($key.VirtualKeyCode) {
-            13 { # ENTER
-                $match = $flatItems | Where-Object { $_.Name -eq $inputBuffer }
-                if (-not $match) {
-                    $match = $flatItems | Where-Object { $_.Name.StartsWith($inputBuffer) }
-                }
-                if ($match) { return $match[0].Object }
-            }
-            9 { # TAB
-                $match = $flatItems | Where-Object { $_.Name.StartsWith($inputBuffer) }
-                if ($match) { $inputBuffer = $match[0].Name }
-            }
-            8 { # BACKSPACE
-                if ($inputBuffer.Length -gt 0) { $inputBuffer = $inputBuffer.Substring(0, $inputBuffer.Length - 1) }
-            }
-            default {
-                if ($key.Character -and $key.Character -ne "`0") { $inputBuffer += $key.Character }
-            }
-        }
-
-        # Compute suggestion
-        $match = $flatItems | Where-Object { $_.Name.StartsWith($inputBuffer) }
-        $suggestion = ""
-        if ($match) {
-            $firstMatch = $match[0].Name
-            if ($inputBuffer -ne $firstMatch) {
-                $suggestion = $firstMatch.Substring($inputBuffer.Length) + " [+tab]"
-            }
-        }
-
-        # Move cursor back to start position
-        $Host.UI.RawUI.CursorPosition = $startPos
-
-        # Clear the line exactly
-        $width = $Host.UI.RawUI.WindowSize.Width
-        Write-Host -NoNewline (" " * ($width - 1))
-
-        # Rewrite line with input + suggestion in quotes
-		$Host.UI.RawUI.CursorPosition = $startPos
-		Write-Host -NoNewline "Please input an API: $inputBuffer"
-		if ($suggestion) { Write-Host -NoNewline $suggestion -ForegroundColor DarkGray }
+    if ($selectedName -eq 'N') {
+        return 'N'
     }
+
+    return ($flat | Where-Object Name -eq $selectedName)[0].Object
 }
 
 # ==========================================================
@@ -429,92 +644,60 @@ function Show-InteractiveFileSelection {
     param ([array]$files)
 
     $fileNames = @($files | ForEach-Object { $_.Name })
-    $inputBuffer = ""
-    $startPos = $Host.UI.RawUI.CursorPosition
 
-    Write-Host "Please input the name of your file: " -NoNewline
-
-    while ($true) {
-        $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-
-        switch ($key.VirtualKeyCode) {
-            13 { # ENTER
-                $matches = @($fileNames | Where-Object { $_.StartsWith($inputBuffer) })
-                if ($matches.Count -gt 0) {
-                    Write-Host ""
-                    return $matches[0]
-                }
-            }
-            8 { # BACKSPACE
-                if ($inputBuffer.Length -gt 0) {
-                    $inputBuffer = $inputBuffer.Substring(0, $inputBuffer.Length - 1)
-                }
-            }
-            9 { # TAB
-                $matches = @($fileNames | Where-Object { $_.StartsWith($inputBuffer) })
-                if ($matches.Count -gt 0) {
-                    $inputBuffer = $matches[0]
-                }
-            }
-            default {
-                if ($key.Character -match '[\x20-\x7E]') {
-                    $inputBuffer += $key.Character
-                }
-            }
-        }
-
-        # Compute suggestion
-        $matches = @($fileNames | Where-Object { $_.StartsWith($inputBuffer) })
-        $suggestion = ""
-        if ($matches.Count -gt 0) {
-            $firstMatch = $matches[0]
-            if ($inputBuffer -ne $firstMatch) {
-                $suggestion = $firstMatch.Substring($inputBuffer.Length) + " [+tab]"
-            }
-        }
-
-        # Move cursor back to start position
-        $Host.UI.RawUI.CursorPosition = $startPos
-
-        # Clear the line exactly
-        $width = $Host.UI.RawUI.WindowSize.Width
-        Write-Host -NoNewline (" " * ($width - 1))
-
-        # Rewrite line with input + suggestion
-        $Host.UI.RawUI.CursorPosition = $startPos
-        Write-Host -NoNewline "Please input the name of your file: $inputBuffer"
-        if ($suggestion) { Write-Host -NoNewline $suggestion -ForegroundColor DarkGray }
-    }
+    return Read-InteractiveSelection `
+        -Prompt "Please input the name of your file: " `
+        -Values $fileNames
 }
 
+# ==========================================================
+# ⭐ Unified HTTP Request Executor with Metrics (ALL METHODS)
+# ==========================================================
 function Invoke-Request-With-Metrics {
     param (
-        [string]$url,
-        [string]$method
+        [string]$Url,
+        [string]$Method,
+        [hashtable]$Headers = @{},
+        [string]$Body = $null,
+        [int]$TimeoutSec = 30
     )
 
-    $statusCode = "ERR"
-    $elapsedMs = "n/a"
+    # ------------------------------------------------------
+    # TCP Connectivity Check (always executed)
+    # ------------------------------------------------------
+    $tcpStatus = Test-TCPConnection-Compact -url $Url
 
-    # ⭐ TCP Check (immer)
-    $tcpStatus = Test-TCPConnection-Compact -url $url
+    $statusCode = "ERR"
+    $elapsedMs  = "n/a"
+    $response   = $null
 
     try {
+        $params = @{
+            Uri             = $Url
+            Method          = $Method
+            Headers         = $Headers
+            TimeoutSec      = $TimeoutSec
+            ErrorAction     = 'Stop'
+            UseBasicParsing = $true
+        }
+
+        # Body is optional (GET safely ignores it)
+        if ($Body -and $Body.Trim() -ne "") {
+            $params.Body = $Body
+        }
+
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $response = Invoke-WebRequest `
-			-Uri $url `
-			-Method $method `
-			-UseBasicParsing `
-			-TimeoutSec 30 `
-			-ErrorAction Stop
+        $response = Invoke-WebRequest @params
         $sw.Stop()
 
         $statusCode = $response.StatusCode
-        $elapsedMs = $sw.ElapsedMilliseconds
-    } catch {
+        $elapsedMs  = $sw.ElapsedMilliseconds
+    }
+    catch {
         if ($_.Exception.Response) {
             $statusCode = [int]$_.Exception.Response.StatusCode
         }
+
         if ($sw) {
             $sw.Stop()
             $elapsedMs = $sw.ElapsedMilliseconds
@@ -522,9 +705,10 @@ function Invoke-Request-With-Metrics {
     }
 
     return @{
-        Status = $statusCode
-        TimeMs = $elapsedMs
-        Tcp    = $tcpStatus
+        Status   = $statusCode
+        TimeMs   = $elapsedMs
+        Tcp      = $tcpStatus
+        Response = $response
     }
 }
 
@@ -549,247 +733,256 @@ function Show-ProgressBar {
 }
 
 
-# =============================== #
-# MENÜ
-# =============================== #
+function Run-MainMenu {
+    param (
+        [Parameter(Mandatory)]
+        $collectionJson
+    )
 
-Write-Section "Hauptmenue"
-Log-Message "Displaying menu options"
-Write-Host "|| [1] Check single API || [2] Check whole project || [3] Stress test ||"
+    # =============================== #
+    # MENÜ
+    # =============================== #
 
-# Prompt user without logging interfering
-Write-Host "Auswahl (1/2/3): " -NoNewline
-$menuKey = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character
-Write-Host ""  # just move to new line
+    Write-Section "Hauptmenue"
+    Log-Message "Displaying menu options"
+    Write-Host "|| [1] Check single API || [2] Check whole project || [3] Stress test ||"
 
-# Log menu selection separately
-Log-Message "Menue Selection: $menuKey"
-
-#######################################################################
-# MODUS 1 — SINGLE API
-#######################################################################
-if ($menuKey -eq '1') {
-    Log-Message "Modus: Single API"
-
-    Write-Section "Postman Collection Selection"
-	$selectedFile = Select-PostmanCollection
-	$collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
-
-    Write-Section "Load Postman Collection"
-    # Baum anzeigen
-    Log-Message "Root"
-    Print-Tree -items $collectionJson.item
-
-    # Benutzer auswählen lassen
-    $selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
+    # Prompt user without logging interfering
+    Write-Host "Auswahl (1/2/3): " -NoNewline
+    $menuKey = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character
     Write-Host ""
-    Log-Message "Selected API: $($selectedRequestObj.name)"
 
-    # Methode & URL ermitteln
-    $method = $selectedRequestObj.request.method.ToUpper()
-    if ($selectedRequestObj.request.url -is [string]) {
-        $url = $selectedRequestObj.request.url
-    } elseif ($selectedRequestObj.request.url.raw) {
-        $url = $selectedRequestObj.request.url.raw
-    } elseif ($selectedRequestObj.request.url.href) {
-        $url = $selectedRequestObj.request.url.href
-    }
+    # Log menu selection separately
+    Log-Message "Menue Selection: $menuKey"
 
-    # Auth Header auflösen
-    $authHeader = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
+    #######################################################################
+	# MODUS 1 — SINGLE API (repeat request selection)
+	#######################################################################
+	if ($menuKey -eq '1') {
 
-    # Basis-Header
-    $headers = @{} + $authHeader
+		Log-Message "Modus: Single API"
 
-    # Body aus Postman (falls vorhanden)
-    $body = ""
-    if ($method -eq "POST" -and $selectedRequestObj.request.body) {
-        if ($selectedRequestObj.request.body.mode -eq "raw") {
-            $body = $selectedRequestObj.request.body.raw
-        }
-    }
+		do {
+			Write-Section "Load Postman Collection"
+			Log-Message "Root"
+			Print-Tree -items $collectionJson.item
 
-	# Bestätigung
-	Write-Section "API Call verification"
-	$prompt3 = "Do you want to run the selected API call? (J/N): "
-	Write-Host $prompt3 -NoNewline
-	$confirm = Read-Host
-	Log-Message "$prompt3 $confirm"
+			# Select request OR N
+			$selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
+			Write-Host ""
 
-	if ($confirm -ne "J") {
-		Log-Message "API Call canceled."
-		Write-Section "Skript ended"
-		exit
-	}
+			if ($selectedRequestObj -eq 'N') {
+				Log-Message "Returning to main menu"
+				break
+			}
 
-	# 🔍 Parsed Request anzeigen VOR der echten Request-Ausführung
-	Show-Request `
-		-method $method `
-		-url $url `
-		-headers $headers `
-		-body $body
+			Write-Host ""
+			Log-Message "Selected API: $($selectedRequestObj.name)"
 
-	# TCP Connection immer testen
-	Test-TCPConnection -url $url
+			# Method & URL
+			$method = $selectedRequestObj.request.method.ToUpper()
+			if ($selectedRequestObj.request.url -is [string]) {
+				$url = $selectedRequestObj.request.url
+			} elseif ($selectedRequestObj.request.url.raw) {
+				$url = $selectedRequestObj.request.url.raw
+			} elseif ($selectedRequestObj.request.url.href) {
+				$url = $selectedRequestObj.request.url.href
+			}
 
-	# ============================
-	# EXECUTION
-	# ============================
-	if ($method -eq "GET") {
-		# CSRF Preflight
-		$headers['x-csrf-token'] = 'Fetch'
-		$response = Invoke-GETRequest -url $url -headers $headers
+			# Auth + Headers
+			$authHeader = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
+			$headers = @{} + $authHeader
 
-		$csrfToken = $response.Headers['x-csrf-token']
-		$responseCookies = $response.Headers['Set-Cookie']
-		$filteredCookies = @()
-
-		if ($responseCookies) {
-			foreach ($cookie in $responseCookies) {
-				$cookieParts = $cookie -split ','
-				foreach ($part in $cookieParts) {
-					$clean = $part.Trim()
-					foreach ($allowedCookie in $allowedCookies) {
-						if ($clean -like "${allowedCookie}=*") {
-							$escaped = [regex]::Escape($allowedCookie)
-							if ($clean -match ($escaped + '([^;]+)')) {
-								$filteredCookies += $matches[0]
-							}
-						}
-					}
+			# Body
+			$body = ""
+			if ($method -eq "POST" -and $selectedRequestObj.request.body) {
+				if ($selectedRequestObj.request.body.mode -eq "raw") {
+					$body = $selectedRequestObj.request.body.raw
 				}
 			}
+
+			# Preview
+			Show-Request `
+				-method $method `
+				-url $url `
+				-headers $headers `
+				-body $body
+
+			Test-TCPConnection -url $url
+
+			# Execute
+			$result = Invoke-Request-With-Metrics `
+				-Url $url `
+				-Method $method `
+				-Headers $headers `
+				-Body $body
+
+			if ($result.Status -eq 200) {
+				Log-Message "HTTP $($result.Status) completed in $($result.TimeMs) ms" -Color Green
+			} else {
+				Log-Message "HTTP $($result.Status) failed in $($result.TimeMs) ms" -Color Red
+			}
+
+			Write-Section "Execution finished (Single API)"
+			Log-Message "Select another API or press N to go back"
+
 		}
+		while ($true)
 
-		$cookies = $filteredCookies -join '; '
-
-		$postHeaders = @{
-			'x-csrf-token'  = $csrfToken
-			'Accept'        = 'application/json'
-			'Content-Type'  = 'application/json'
-			'Cookie'        = $cookies
-		} + $authHeader
-
-		Invoke-POSTRequest -url $url -headers $postHeaders -body $body
-
-	} elseif ($method -eq "POST") {
-		# POST-only Request
-		Invoke-POSTRequest -url $url -headers $headers -body $body
+		return
 	}
-    elseif ($method -eq "POST") {
 
-        # POST-only Request
-        Invoke-POSTRequest -url $url -headers $headers -body $body
+    #######################################################################
+    # MODUS 2 — WHOLE PROJECT
+    #######################################################################
+    elseif ($menuKey -eq '2') {
+        Log-Message "Modus: Whole Project"
 
+        Log-Message "Root"
+        Print-Tree-With-Execution `
+		-items $collectionJson.item `
+		-collection $collectionJson
+
+        Write-Section "Skript beendet"
+        return
     }
+
+    #######################################################################
+	# MODUS 3 — STRESS TEST (repeat request selection)
+	#######################################################################
+	elseif ($menuKey -eq '3') {
+
+		Log-Message "Modus: Stress Test"
+
+		do {
+			Log-Message "Root"
+			Print-Tree -items $collectionJson.item
+
+			# Select request OR N
+			$selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
+			Write-Host ""
+
+			if ($selectedRequestObj -eq 'N') {
+				Log-Message "Returning to main menu"
+				break
+			}
+
+			Write-Host ""
+			Log-Message "Selected API for stress test: $($selectedRequestObj.name)"
+
+			# Method & URL
+			$method = $selectedRequestObj.request.method.ToUpper()
+			if ($selectedRequestObj.request.url -is [string]) {
+				$url = $selectedRequestObj.request.url
+			} elseif ($selectedRequestObj.request.url.raw) {
+				$url = $selectedRequestObj.request.url.raw
+			} elseif ($selectedRequestObj.request.url.href) {
+				$url = $selectedRequestObj.request.url.href
+			}
+
+			# Auth + Headers
+			$authHeader = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
+			$headers = @{} + $authHeader
+
+			# Body
+			$body = ""
+			if ($method -eq "POST" -and $selectedRequestObj.request.body) {
+				if ($selectedRequestObj.request.body.mode -eq "raw") {
+					$body = $selectedRequestObj.request.body.raw
+				}
+			}
+
+			# Stress test
+			$iterations = 100
+			$totalTime = 0
+
+			Write-Section "Running Stress Test ($iterations requests)"
+			for ($i = 1; $i -le $iterations; $i++) {
+				$result = Invoke-Request-With-Metrics -Url $url -Method $method -Headers $headers -Body $body
+				if ($result.TimeMs -ne "n/a") { $totalTime += $result.TimeMs }
+				Show-ProgressBar -current $i -total $iterations
+			}
+
+			$averageTime = if ($totalTime -ne 0) {
+				[math]::Round($totalTime / $iterations, 2)
+			} else { "n/a" }
+
+			Write-Section "Stress Test Results"
+			Log-Message "Completed $iterations requests for '$($selectedRequestObj.name)'"
+			Log-Message "Average response time: $averageTime ms" -Color Green
+
+			Write-Section "Execution finished (Stress Test)"
+			Log-Message "Select another API or press N to go back"
+
+		}
+		while ($true)
+
+		return
+	}
+
     else {
-        Log-Message "HTTP method '$method' not supported." -Color Yellow
+        Log-Message "Invalid Menue selection." -Color Red
+        return
     }
-
-    Write-Section "Skript ended"
-    exit
 }
 
-#######################################################################
-# MODUS 2 — WHOLE PROJECT
-#######################################################################
-elseif ($menuKey -eq '2') {
-    Log-Message "Modus: Whole Project"
 
-    if (-not $collectionJson) {
-        Write-Section "Postman Collection Selection"
-        $selectedFile = Select-PostmanCollection
-		$collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
-    }
+# ==========================================================
+# 🔁 MAIN EXECUTION LOOP (Y/N RESTART)
+# ==========================================================
 
-    $rootFolders = $collectionJson.item
-    Log-Message "Root"
-    Print-Tree-With-Execution -items $rootFolders
+$runAgain = $true
 
-    Write-Section "Skript beendet"
-    exit
-}
+do {
 
-#######################################################################
-# MODUS 3 — STRESS TEST
-#######################################################################
-elseif ($menuKey -eq '3') {
-    Log-Message "Modus: Stress Test"
+    # Reset line counter per run (optional but clean)
+    $global:lineCounter = 1
 
-    # Postman Collection Auswahl
+    # -------------------------------
+    # Select Postman Collection
+    # -------------------------------
     Write-Section "Postman Collection Selection"
     $selectedFile = Select-PostmanCollection
-	$collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
 
-    # Baum anzeigen
-    Log-Message "Root"
-    Print-Tree -items $collectionJson.item
+    if (-not $selectedFile) {
+        Log-Message "No file selected. Exiting." -Color Red
+        break
+    }
 
-    # Request auswählen
-    $selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
+    $collectionJson = Get-Content $selectedFile -Raw | ConvertFrom-Json
+
+    # -------------------------------
+    # Run Main Menu
+    # -------------------------------
+    Run-MainMenu -collectionJson $collectionJson
+
+    # -------------------------------
+    # Ask user if they want to restart
+    # -------------------------------
     Write-Host ""
-    Log-Message "Selected API for stress test: $($selectedRequestObj.name)"
+    Write-Host "Do you want to select another Postman collection? (Y/N): " -NoNewline
 
-    # Bestätigung
-    Write-Section "Stress Test Verification"
-    $prompt3 = "Do you want to run the stress test for the selected API call 100 times? (J/N): "
-    Write-Host $prompt3 -NoNewline
-    $confirm = Read-Host
-    Log-Message "$prompt3 $confirm"
+    while ($true) {
+        $key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character).ToUpper()
+        Write-Host ""
 
-    if ($confirm -ne "J") {
-        Log-Message "Stress Test canceled."
-        Write-Section "Skript ended"
-        exit
-    }
-
-    # Methode & URL ermitteln
-    $method = $selectedRequestObj.request.method.ToUpper()
-    if ($selectedRequestObj.request.url -is [string]) {
-        $url = $selectedRequestObj.request.url
-    } elseif ($selectedRequestObj.request.url.raw) {
-        $url = $selectedRequestObj.request.url.raw
-    } elseif ($selectedRequestObj.request.url.href) {
-        $url = $selectedRequestObj.request.url.href
-    }
-
-    # Auth Header auflösen
-    $authHeader = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
-
-    # Basis-Header
-    $headers = @{} + $authHeader
-
-    # Body aus Postman (falls vorhanden)
-    $body = ""
-    if ($method -eq "POST" -and $selectedRequestObj.request.body) {
-        if ($selectedRequestObj.request.body.mode -eq "raw") {
-            $body = $selectedRequestObj.request.body.raw
+        if ($key -eq 'Y') {
+            Log-Message "User chose to load another Postman collection"
+            $runAgain = $true
+            break
+        }
+        elseif ($key -eq 'N') {
+            Log-Message "User chose to end execution"
+            $runAgain = $false
+            break
+        }
+        else {
+            Write-Host "Please press Y or N: " -NoNewline
         }
     }
 
-    # Stress Test: 100 Requests
-    $iterations = 100
-    $totalTime = 0
-
-    Write-Section "Running Stress Test ($iterations requests)"
-    for ($i = 1; $i -le $iterations; $i++) {
-        $result = Invoke-Request-With-Metrics -url $url -method $method
-        $timeMs = $result.TimeMs
-        if ($timeMs -ne "n/a") { $totalTime += $timeMs }
-
-        Show-ProgressBar -current $i -total $iterations
-    }
-
-    $averageTime = if ($totalTime -ne 0) { [math]::Round($totalTime / $iterations, 2) } else { "n/a" }
-    Write-Section "Stress Test Results"
-    Log-Message "Completed $iterations requests for '$($selectedRequestObj.name)'"
-    Log-Message "Average response time: $averageTime ms" -Color Green
-
-    Write-Section "Skript ended"
-    exit
 }
+while ($runAgain)
 
-else {
-    Log-Message "Invalid Menue selection." -Color Red
-    exit
-}
+Write-Section "Script finished"
+Log-Message "Execution terminated by user"
