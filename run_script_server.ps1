@@ -2,7 +2,6 @@
 # PowerShell Script: GET/POST
 # =============================== #
 
-$baseUrl = "http://localhost:3000/test"
 $global:lineCounter = 1
 $allowedCookies = @('sap-XSRF_WC1_100', 'sap-usercontext')
 $postData = @{ '' = '' } | ConvertTo-Json
@@ -238,31 +237,53 @@ function Show-Request {
 function Print-Tree {
     param (
         [array]$items,
-        [string]$prefix = "",
-        [bool]$isLast = $true
+        [string]$prefix = ""
     )
 
     for ($i = 0; $i -lt $items.Count; $i++) {
+
         $item = $items[$i]
         $last = ($i -eq $items.Count - 1)
 
-        # Tree symbols
-        $branch = if ($last) { "\-- " } else { "+-- " }
-        $nextPrefix = if ($last) { "    " } else { "|   " }
+        $branch     = if ($last) { "\-- " } else { "+-- " }
+        $nextPrefix = if ($last) { $prefix + "    " } else { $prefix + "|   " }
 
+        # -------------------------
         # FOLDER
+        # -------------------------
         if ($item.PSObject.Properties.Name -contains "item") {
             Log-Message "$prefix$branch$($item.name)"
-            Print-Tree `
-                -items $item.item `
-                -prefix ($prefix + $nextPrefix) `
-                -isLast $last
+            Print-Tree -items $item.item -prefix $nextPrefix
+            continue
         }
 
-        # REQUEST
-        elseif ($item.PSObject.Properties.Name -contains "request") {
+        # -------------------------
+        # REQUEST (COLORED METHOD)
+        # -------------------------
+        if ($item.PSObject.Properties.Name -contains "request") {
+
             $method = $item.request.method.ToUpper()
-            Log-Message "$prefix$branch[$method] $($item.name)"
+
+            switch ($method) {
+                "GET"    { $methodColor = "Green" }
+                "POST"   { $methodColor = "DarkYellow" }
+                "PUT"    { $methodColor = "Cyan" }
+                "DELETE" { $methodColor = "Red" }
+                default  { $methodColor = "White" }
+            }
+
+            # ----- console output (colored) -----
+            $lineNumStr = "<Line Nr. {0:D3}> " -f $global:lineCounter
+            Write-Host -NoNewline $lineNumStr
+            Write-Host -NoNewline "$prefix$branch["
+            Write-Host -NoNewline $method -ForegroundColor $methodColor
+            Write-Host "] $($item.name)"
+
+            # ----- log file (plain text) -----
+            "$prefix$branch[$method] $($item.name)" |
+                Out-File -Append -FilePath "log.txt"
+
+            $global:lineCounter++
         }
     }
 }
