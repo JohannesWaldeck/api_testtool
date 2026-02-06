@@ -940,7 +940,9 @@ function Show-Response-Summary {
 
 
 function Show-Response-Details {
-    param ([hashtable]$Result)
+    param (
+        [hashtable]$Result
+    )
 
     $response = $Result.Response
     if (-not $response) {
@@ -948,19 +950,18 @@ function Show-Response-Details {
         return
     }
 
-    # Only show headers, cookies, body in console
     Write-Section "Response Headers"
     foreach ($key in ($response.Headers.Keys | Sort-Object)) {
-        if (-not $Global:LoggingExecutionOnly) { Log-Message ("{0}: {1}" -f $key, $response.Headers[$key]) }
+        Write-Host ("{0}: {1}" -f $key, $response.Headers[$key])
     }
 
     Write-Section "Response Cookies"
     $cookies = Parse-ResponseCookies -Response $response
     if ($cookies.Count -eq 0) {
-        if (-not $Global:LoggingExecutionOnly) { Log-Message "No cookies returned" }
+        Write-Host "No cookies returned"
     } else {
         foreach ($c in $cookies) {
-            if (-not $Global:LoggingExecutionOnly) { Log-Message "$($c.Name) = $($c.Value)" }
+            Write-Host "$($c.Name) = $($c.Value)"
         }
     }
 
@@ -968,12 +969,12 @@ function Show-Response-Details {
     if ($response.Content -and $response.Content.Trim() -ne "") {
         try {
             $pretty = ($response.Content | ConvertFrom-Json | ConvertTo-Json -Depth 10)
-            foreach ($line in $pretty -split "`n") { if (-not $Global:LoggingExecutionOnly) { Log-Message $line } }
+            $pretty -split "`n" | ForEach-Object { Write-Host $_ }
         } catch {
-            foreach ($line in $response.Content -split "`n") { if (-not $Global:LoggingExecutionOnly) { Log-Message $line } }
+            $response.Content -split "`n" | ForEach-Object { Write-Host $_ }
         }
     } else {
-        if (-not $Global:LoggingExecutionOnly) { Log-Message "(empty body)" }
+        Write-Host "(empty body)"
     }
 
     Write-BlockBoundary "RESPONSE END"
@@ -1155,15 +1156,11 @@ function Run-MainMenu {
 					Write-Host ""
 				} while ($key -notin @('J','N'))
 
-				# 📝 ALWAYS log response details (logfile ONLY)
-				$Global:LoggingExecutionOnly = $true
+				# 📝 ALWAYS log response details exactly once
 				Log-Response-Details -Result $result
-				$Global:LoggingExecutionOnly = $false
 
 				# 👀 Show in console ONLY if user pressed J
 				if ($key -eq 'J') {
-					# Temporarily disable logging so Show-Response-Details only prints to console
-					$Global:LoggingExecutionOnly = $false
 					Show-Response-Details -Result $result
 				}
                 # =====================
