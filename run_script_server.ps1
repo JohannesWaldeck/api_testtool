@@ -76,6 +76,15 @@ function Write-BlockBoundary {
     Log-Message "==== $Title ====" -Color Cyan
 }
 
+function Write-Request-Header {
+    param (
+        [Parameter(Mandatory)]
+        [string]$RequestName
+    )
+
+    Write-BlockBoundary "REQUEST: $RequestName"
+}
+
 function Log-Critical {
     param (
         [string]$message,
@@ -90,12 +99,25 @@ function Log-Critical {
 }
 
 
+function Log-Only {
+    param (
+        [Parameter(Mandatory)]
+        [string]$Message
+    )
+
+    $lineNum = $global:lineCounter.ToString("D3")
+    "<Line Nr. $lineNum> $Message" | Out-File -Append -FilePath $global:LogFile
+    $global:lineCounter++
+}
+
+
 function Select-PostmanCollection {
     param (
         [string]$folderPath = $PSScriptRoot
     )
 
-    Write-Section "Postman Collection Selection"
+    # UI only — do NOT log
+    Write-Section "Postman Collection Selection" -NoLog
 
     $postmanFiles = Get-ChildItem -Path $folderPath -Filter "*.json"
 
@@ -110,7 +132,6 @@ function Select-PostmanCollection {
         $file = Split-Path $fullPath -Leaf
         Write-Host "$dir\" -NoNewline
         Write-Host $file -ForegroundColor Yellow
-        Log-Critical "$dir\$file"
     }
 
     $selection = Show-InteractiveFileSelection -files $postmanFiles
@@ -127,6 +148,7 @@ function Select-PostmanCollection {
         return $null
     }
 
+    # ✅ the ONLY thing logged from this function
     Log-Message "Selected file: $($selectedFile.FullName)"
     return $selectedFile.FullName
 }
@@ -484,9 +506,7 @@ function Print-Tree-With-Execution {
         [switch]$NoLog
     )
 
-    # -------------------------------
     # Initialize globals if not set
-    # -------------------------------
     if (-not $global:maxLeftLength)   { $global:maxLeftLength = 0 }
     if (-not $global:maxMethodLength) { $global:maxMethodLength = 0 }
     if (-not $global:maxStatusLength) { $global:maxStatusLength = 0 }
@@ -494,14 +514,10 @@ function Print-Tree-With-Execution {
     if (-not $global:maxTcpLength)    { $global:maxTcpLength = 0 }
     if (-not $global:lineCounter)     { $global:lineCounter = 1 }
 
-    # -------------------------------
     # First pass → calculate alignment
-    # -------------------------------
     Get-MaxLengths -items $items -prefix $prefix
 
-    # -------------------------------
     # Print tree
-    # -------------------------------
     for ($i = 0; $i -lt $items.Count; $i++) {
         $item = $items[$i]
         $last = ($i -eq $items.Count - 1)
@@ -513,16 +529,17 @@ function Print-Tree-With-Execution {
         # -------------------------
         if ($item.PSObject.Properties.Name -contains "item") {
             $leftText = "$prefix$branch$($item.name)"
-            
-            # Log folder line
             $lineNumStr = "<Line Nr. {0:D3}> " -f $global:lineCounter
-            Write-Host "$lineNumStr$leftText"  # console output (white folder)
-            if (-not $NoLog) {
-                "$lineNumStr$leftText" | Out-File -Append -FilePath $global:LogFile
-            }
+
+            # console output
+            Write-Host "$lineNumStr$leftText" -ForegroundColor White
+
+            # log output
+            if (-not $NoLog) { "$lineNumStr$leftText" | Out-File -Append -FilePath $global:LogFile }
+
             $global:lineCounter++
 
-            # Recurse into child items
+            # recurse
             Print-Tree-With-Execution -items $item.item -collection $collection -prefix $nextPrefix -isLast $last -NoLog:$NoLog
             continue
         }
@@ -542,13 +559,13 @@ function Print-Tree-With-Execution {
                 }
             }
 
-            # --- URL ---
+            # URL
             if ($item.request.url -is [string]) { $url = $item.request.url }
             elseif ($item.request.url -and $item.request.url.raw) { $url = $item.request.url.raw }
             elseif ($item.request.url -and $item.request.url.href) { $url = $item.request.url.href }
             else { $url = "<unknown>" }
 
-            # --- EXECUTE ---
+            # Execute request
             $result = Invoke-Request-With-Metrics -Url $url -Method $method -Headers $headers -Body $body
             $statusCode = $result.Status
             $timeMs     = $result.TimeMs
@@ -560,17 +577,16 @@ function Print-Tree-With-Execution {
                 $responseUrl = $url
             }
 
-            # --- COLORS ---
+            # Colors for console
             switch ($method) {
                 "GET"  { $methodColor = "Green" }
                 "POST" { $methodColor = "DarkYellow" }
                 default { $methodColor = "White" }
             }
-
             $statusColor = if ($statusCode -ge 200 -and $statusCode -lt 300) { "Green" } else { "Red" }
             $tcpColor    = if ($tcp -match "OK") { "Green" } else { "Red" }
 
-            # --- SHORT URL ---
+            # Short URL
             try {
                 $uri = [System.Uri]$responseUrl
                 $segments = $uri.AbsolutePath.Trim("/").Split("/")
@@ -584,23 +600,20 @@ function Print-Tree-With-Execution {
                 $shortUrl = $responseUrl
             }
 
-            # --- FINAL URL FORMAT ---
             $displayUrl = Format-UriFixedWidth -Uri $shortUrl -MaxLength 34
 
-            # --- ALIGNMENT ---
+            # Alignment padding
             $leftText = "$prefix$branch$($item.name)"
             $padding1 = " " * ($global:maxLeftLength - $leftText.Length + 1)
             $methodPadded = $method + " " * ($global:maxMethodLength - $method.Length)
-            $statusText = $statusCode.ToString()
-            $statusPadded = $statusText + " " * ($global:maxStatusLength - $statusText.Length)
-            $timeText = "${timeMs}ms"
-            $timePadded = $timeText + " " * ($global:maxTimeLength - $timeText.Length)
-            $tcpPadded = $tcp + " " * ($global:maxTcpLength - $tcp.Length)
+            $statusPadded = $statusCode.ToString() + " " * ($global:maxStatusLength - $statusCode.ToString().Length)
+            $timePadded   = "${timeMs}ms" + " " * ($global:maxTimeLength - ("${timeMs}ms").Length)
+            $tcpPadded    = $tcp + " " * ($global:maxTcpLength - $tcp.Length)
 
-            # --- OUTPUT TO CONSOLE WITH COLORS ---
+            # Console output
             $lineNumStr = "<Line Nr. {0:D3}> " -f $global:lineCounter
             Write-Host -NoNewline $lineNumStr
-            Write-Host -NoNewline "$leftText$padding1["
+            Write-Host -NoNewline "$leftText$padding1[" 
             Write-Host -NoNewline $methodPadded -ForegroundColor $methodColor
             Write-Host -NoNewline "] ["
             Write-Host -NoNewline $statusPadded -ForegroundColor $statusColor
@@ -608,16 +621,21 @@ function Print-Tree-With-Execution {
             Write-Host -NoNewline $tcpPadded -ForegroundColor $tcpColor
             Write-Host " | $displayUrl"
 
-            # --- LOG TO FILE ---
+            # Log output (matches console exactly, plain text)
             if (-not $NoLog) {
-                "$lineNumStr$leftText$padding1[$methodPadded] [$statusPadded] $timePadded | TCP $tcpPadded | $displayUrl" |
+                "$lineNumStr$leftText [$method] [$statusCode] ${timeMs}ms | $tcp | $displayUrl" |
                     Out-File -Append -FilePath $global:LogFile
             }
+
+            # Always log full request + response details
+			Log-Request-Details -RequestName $item.name -Method $method -Url $url -Headers $headers -Body $body -Result $result
 
             $global:lineCounter++
         }
     }
 }
+
+
 
 
 
@@ -923,24 +941,26 @@ function Show-Response-Summary {
 
 function Show-Response-Details {
     param ([hashtable]$Result)
+
     $response = $Result.Response
     if (-not $response) {
         Write-BlockBoundary "RESPONSE END"
         return
     }
 
+    # Only show headers, cookies, body in console
     Write-Section "Response Headers"
     foreach ($key in ($response.Headers.Keys | Sort-Object)) {
-        Log-Message ("{0}: {1}" -f $key, $response.Headers[$key])
+        if (-not $Global:LoggingExecutionOnly) { Log-Message ("{0}: {1}" -f $key, $response.Headers[$key]) }
     }
 
     Write-Section "Response Cookies"
     $cookies = Parse-ResponseCookies -Response $response
     if ($cookies.Count -eq 0) {
-        Log-Message "No cookies returned"
+        if (-not $Global:LoggingExecutionOnly) { Log-Message "No cookies returned" }
     } else {
         foreach ($c in $cookies) {
-            Log-Message "$($c.Name) = $($c.Value)"
+            if (-not $Global:LoggingExecutionOnly) { Log-Message "$($c.Name) = $($c.Value)" }
         }
     }
 
@@ -948,15 +968,129 @@ function Show-Response-Details {
     if ($response.Content -and $response.Content.Trim() -ne "") {
         try {
             $pretty = ($response.Content | ConvertFrom-Json | ConvertTo-Json -Depth 10)
-            foreach ($line in $pretty -split "`n") { Log-Message $line }
+            foreach ($line in $pretty -split "`n") { if (-not $Global:LoggingExecutionOnly) { Log-Message $line } }
         } catch {
-            foreach ($line in $response.Content -split "`n") { Log-Message $line }
+            foreach ($line in $response.Content -split "`n") { if (-not $Global:LoggingExecutionOnly) { Log-Message $line } }
         }
     } else {
-        Log-Message "(empty body)"
+        if (-not $Global:LoggingExecutionOnly) { Log-Message "(empty body)" }
     }
 
     Write-BlockBoundary "RESPONSE END"
+}
+
+
+function Log-Request-Details {
+    param (
+        [Parameter(Mandatory)]
+        [string]$RequestName,
+        [string]$Method,
+        [string]$Url,
+        [hashtable]$Headers = @{},
+        [string]$Body = "",
+        [hashtable]$Result
+    )
+
+    # -------------------------
+    # REQUEST DETAILS
+    # -------------------------
+    Log-Only "===== REQUEST START: $RequestName ====="
+    Log-Only "Full URL: $Url"
+    Log-Only "Method: $Method"
+
+    try {
+        $uri = [System.Uri]$Url
+        Log-Only "Protocol: $($uri.Scheme)"
+        Log-Only "Domain: $($uri.Host)"
+        Log-Only "Resource: $($uri.AbsolutePath)"
+
+        if ($uri.Query) {
+            Log-Only "Parameters:"
+            foreach ($pair in $uri.Query.TrimStart('?').Split('&')) {
+                $kv = $pair.Split('=',2)
+                $key = [System.Web.HttpUtility]::UrlDecode($kv[0])
+                $val = if ($kv.Count -gt 1) { [System.Web.HttpUtility]::UrlDecode($kv[1]) } else { "" }
+                Log-Only "---${key}: $val"
+            }
+        } else {
+            Log-Only "Parameters: none"
+        }
+    } catch {
+        Log-Only "Invalid URL format"
+    }
+
+    Log-Only "Headers:"
+    if ($Headers.Count -eq 0) {
+        Log-Only "(no headers)"
+    } else {
+        foreach ($k in ($Headers.Keys | Sort-Object)) {
+            $v = $Headers[$k]
+            if ($k -match 'authorization|cookie') { $v = "******" }
+            Log-Only "${k}: $v"
+        }
+    }
+
+    Log-Only "Body:"
+    if ($Body -and $Body.Trim() -ne "") {
+        try {
+            $pretty = ($Body | ConvertFrom-Json | ConvertTo-Json -Depth 10)
+            foreach ($line in $pretty -split "`n") { Log-Only $line }
+        } catch {
+            foreach ($line in $Body -split "`n") { Log-Only $line }
+        }
+    } else {
+        Log-Only "(not supplied)"
+    }
+    Log-Only "===== REQUEST END =====`n"
+
+    # -------------------------
+    # RESPONSE DETAILS
+    # -------------------------
+    Log-Response-Details -Result $Result
+}
+
+
+function Log-Response-Details {
+    param (
+        [Parameter(Mandatory)]
+        [hashtable]$Result
+    )
+
+    $response = $Result.Response
+    if (-not $response) {
+        Log-Only "No HTTP response received"
+        return
+    }
+
+    Log-Only "HTTP Status: $($Result.Status)"
+    Log-Only "----------------------------------------"
+
+    Log-Only "Response Headers"
+    foreach ($key in ($response.Headers.Keys | Sort-Object)) {
+        Log-Only ("{0}: {1}" -f $key, $response.Headers[$key])
+    }
+
+    Log-Only "Response Cookies"
+    $cookies = Parse-ResponseCookies -Response $response
+    if ($cookies.Count -eq 0) {
+        Log-Only "No cookies returned"
+    } else {
+        foreach ($c in $cookies) {
+            Log-Only "$($c.Name) = $($c.Value)"
+        }
+    }
+
+    Log-Only "Response Body"
+    if ($response.Content -and $response.Content.Trim() -ne "") {
+        try {
+            $pretty = ($response.Content | ConvertFrom-Json | ConvertTo-Json -Depth 10)
+            foreach ($line in $pretty -split "`n") { Log-Only $line }
+        } catch {
+            foreach ($line in $response.Content -split "`n") { Log-Only $line }
+        }
+    } else {
+        Log-Only "(empty body)"
+    }
 }
 
 
@@ -994,6 +1128,10 @@ function Run-MainMenu {
                 $url = if ($selectedRequestObj.request.url -is [string]) { $selectedRequestObj.request.url }
                        elseif ($selectedRequestObj.request.url.raw) { $selectedRequestObj.request.url.raw }
                        elseif ($selectedRequestObj.request.url.href) { $selectedRequestObj.request.url.href }
+				
+				# 🔖 Request name (visible + logged)
+				$requestName = $selectedRequestObj.name
+				Write-Request-Header -RequestName $requestName
 
                 $headers = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
                 $body = if ($method -in @("POST","PUT","PATCH") -and $selectedRequestObj.request.body -and $selectedRequestObj.request.body.mode -eq "raw") {
@@ -1012,13 +1150,22 @@ function Run-MainMenu {
                 Show-Response-Summary -Result $result
 
                 do {
-                    Write-Host "Show response details? (J/N): " -NoNewline
-                    $key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character).ToUpper()
-                    Write-Host ""
-                } while ($key -notin @('J','N'))
+					Write-Host "Show response details? (J/N): " -NoNewline
+					$key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character).ToUpper()
+					Write-Host ""
+				} while ($key -notin @('J','N'))
 
-                if ($key -eq 'J') { Show-Response-Details -Result $result }
+				# 📝 ALWAYS log response details (logfile ONLY)
+				$Global:LoggingExecutionOnly = $true
+				Log-Response-Details -Result $result
+				$Global:LoggingExecutionOnly = $false
 
+				# 👀 Show in console ONLY if user pressed J
+				if ($key -eq 'J') {
+					# Temporarily disable logging so Show-Response-Details only prints to console
+					$Global:LoggingExecutionOnly = $false
+					Show-Response-Details -Result $result
+				}
                 # =====================
                 # EXECUTION MODE OFF
                 # =====================
@@ -1030,8 +1177,8 @@ function Run-MainMenu {
         '2' {
             Clear-Screen
             $Global:LoggingExecutionOnly = $true
-            Print-Tree-With-Execution -items $collectionJson.item -collection $collectionJson
-            $Global:LoggingExecutionOnly = $false
+			Print-Tree-With-Execution -items $collectionJson.item -collection $collectionJson -NoLog:$false
+			$Global:LoggingExecutionOnly = $false
         }
 
         '3' {
@@ -1108,7 +1255,8 @@ while ($runAgain) {
     # ------------------------------------------------------
     # STEP 1 — Select Postman collection (NOW SAFE TO LOG)
     # ------------------------------------------------------
-
+	Log-Message
+	
     $selectedFile = Select-PostmanCollection
     if (-not $selectedFile) { break }
 
