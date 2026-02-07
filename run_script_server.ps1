@@ -355,7 +355,8 @@ function Print-Tree {
     param (
         [array]$items,
         [string]$prefix = "",
-        [switch]$NoLog
+        [switch]$NoLog,
+        [bool]$HighlightRequests = $false   # NEW PARAMETER
     )
 
     for ($i = 0; $i -lt $items.Count; $i++) {
@@ -381,7 +382,7 @@ function Print-Tree {
             $global:lineCounter++
 
             # recurse
-            Print-Tree -items $item.item -prefix $nextPrefix -NoLog:$NoLog
+            Print-Tree -items $item.item -prefix $nextPrefix -NoLog:$NoLog -HighlightRequests:$HighlightRequests
             continue
         }
 
@@ -403,12 +404,20 @@ function Print-Tree {
             $lineNumStr = "<Line Nr. {0:D3}> " -f $global:lineCounter
             $lineText = "$prefix$branch[$method] $($item.name)"
 
-            # console output: color only for method
+            # console output:
             $prefixPart = "$lineNumStr$prefix$branch["
-            $postMethodPart = "] $($item.name)"
+            $afterMethod = "] "
+
             Write-Host -NoNewline $prefixPart
             Write-Host -NoNewline $method -ForegroundColor $methodColor
-            Write-Host $postMethodPart
+            Write-Host -NoNewline $afterMethod
+
+            # CONDITIONAL HIGHLIGHTING
+            if ($HighlightRequests) {
+                Write-Host $item.name -ForegroundColor Yellow
+            } else {
+                Write-Host $item.name -ForegroundColor White
+            }
 
             # log output (plain text)
             if (-not $NoLog) { "$lineNumStr$lineText" | Out-File -Append -FilePath $global:LogFile }
@@ -636,9 +645,6 @@ function Print-Tree-With-Execution {
 }
 
 
-
-
-
 function Read-InteractiveSelection {
     param (
         [string]$Prompt,
@@ -651,7 +657,24 @@ function Read-InteractiveSelection {
     $startPos = $Host.UI.RawUI.CursorPosition
     $matchIndex = 0
 
-    Write-Host $Prompt -NoNewline
+    # -----------------------------
+    # Helper: draw prompt with yellow N inside text
+    # -----------------------------
+    function Write-PromptWithYellowN {
+        param ([string]$text)
+
+        # Highlight literal "N" in yellow
+        if ($text -match '(.*)(\bN\b)(.*)') {
+            Write-Host -NoNewline $matches[1]                    # before N
+            Write-Host -NoNewline $matches[2] -ForegroundColor Yellow  # the N
+            Write-Host -NoNewline $matches[3]                    # after N
+        } else {
+            Write-Host -NoNewline $text
+        }
+    }
+
+    # initial prompt render
+    Write-PromptWithYellowN $Prompt
 
     while ($true) {
         $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -659,16 +682,13 @@ function Read-InteractiveSelection {
         switch ($key.VirtualKeyCode) {
 
             13 { # ENTER
-				if ($Values -contains $inputBuffer) {
-					Write-Host ""   # ← force line break after user input
-					return $inputBuffer
-				}
-			}
+                if ($Values -contains $inputBuffer) {
+                    Write-Host ""
+                    return $inputBuffer
+                }
+            }
 
-            9 { # TAB → autocomplete / cycle
-
-                # 🔑 CORE FIX:
-                # If input is a full match → cycle through ALL values
+            9 { # TAB
                 if ($Values -contains $inputBuffer) {
                     $matches = $Values
                 } else {
@@ -701,28 +721,38 @@ function Read-InteractiveSelection {
             }
         }
 
-        # Vorschau (UNCHANGED, incl. [+tab])
+        # -----------------------------
+        # preview / suggestion logic
+        # -----------------------------
         $preview = @($Values | Where-Object { $_.StartsWith($inputBuffer) })
         $suggestion = ""
+
         if ($preview.Count -gt 0 -and $preview[0] -ne $inputBuffer) {
+            # normal autocomplete
             $suggestion = $preview[0].Substring($inputBuffer.Length) + " [+tab]"
         }
+        # 🔹 NEW: if inputBuffer is exactly "N" and 'N' is a valid option, show [+Enter] hint
+        elseif ($inputBuffer.ToUpper() -eq 'N' -and $Values -contains 'N') {
+            $suggestion = " [+Enter]"
+        }
 
-        # redraw
+        # -----------------------------
+        # redraw line
+        # -----------------------------
         $Host.UI.RawUI.CursorPosition = $startPos
-        Write-Host -NoNewline (" " * ($Host.UI.RawUI.WindowSize.Width - 1))
+        Write-Host -NoNewline (" " * ($Host.UI.RawUI.WindowSize.Width - 1)) # clear line
         $Host.UI.RawUI.CursorPosition = $startPos
 
-        # print prompt (normal color)
-		Write-Host -NoNewline $Prompt
+        # prompt
+        Write-PromptWithYellowN $Prompt
 
-		# print user input (yellow)
-		Write-Host -NoNewline $inputBuffer -ForegroundColor Yellow
+        # user input
+        Write-Host -NoNewline $inputBuffer -ForegroundColor Yellow
 
-		# print suggestion (gray)
-		if ($suggestion) {
-			Write-Host -NoNewline $suggestion -ForegroundColor DarkGray
-		}
+        # suggestion
+        if ($suggestion) {
+            Write-Host -NoNewline $suggestion -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -867,9 +897,35 @@ function Show-ProgressBar {
 
 function Show-MainMenu {
     Write-Section "Main Menu"
-    Write-Host "|| [1] Check Single API || [2] Check Whole Project || [3] Stress Test ||"
-    Write-Host "Selection (1/2/3): " -NoNewline
-    return $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character
+
+    Write-Host "|| [" -NoNewline
+    Write-Host "1" -ForegroundColor Yellow -NoNewline
+    Write-Host "] Check Single API || [" -NoNewline
+    Write-Host "2" -ForegroundColor Yellow -NoNewline
+    Write-Host "] Check Whole Project || [" -NoNewline
+    Write-Host "3" -ForegroundColor Yellow -NoNewline
+    Write-Host "] Stress Test ||"
+
+    Write-Host "Selection (" -NoNewline
+    Write-Host "1" -ForegroundColor Yellow -NoNewline
+    Write-Host "/" -NoNewline
+    Write-Host "2" -ForegroundColor Yellow -NoNewline
+    Write-Host "/" -NoNewline
+    Write-Host "3" -ForegroundColor Yellow -NoNewline
+    Write-Host "): " -NoNewline
+
+    $startPos = $Host.UI.RawUI.CursorPosition
+
+    while ($true) {
+        $key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character)
+
+        if ($key -in @('1','2','3')) {
+            Write-Host $key -ForegroundColor Yellow -NoNewline
+            Write-Host ""  # move to next line
+            return $key
+        }
+        # else do nothing, wait for proper input
+    }
 }
 
 function Show-Request-Block {
@@ -1104,12 +1160,8 @@ function Run-MainMenu {
         $collectionJson
     )
 
-    Write-Section "Main Menu" -NoLog
-    Write-Host "|| [1] Check single API || [2] Check whole project || [3] Stress test ||"
-    Write-Host "Selection (1/2/3): " -NoNewline
-
-    $menuKey = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character
-    Write-Host ""
+    $menuKey = Show-MainMenu
+	Write-Host ""
 
     switch ($menuKey) {
 
@@ -1117,7 +1169,7 @@ function Run-MainMenu {
             Clear-Screen
             do {
                 # console tree only
-                Print-Tree -items $collectionJson.item -NoLog
+                Print-Tree -items $collectionJson.item -HighlightRequests:$true
 
                 $selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
                 if ($selectedRequestObj -eq 'N') { return }
@@ -1150,16 +1202,35 @@ function Run-MainMenu {
                 $result = Invoke-Request-With-Metrics -Url $url -Method $method -Headers $headers -Body $body
                 Show-Response-Summary -Result $result
 
-                do {
-					Write-Host "Show response details? (J/N): " -NoNewline
-					$key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character).ToUpper()
-					Write-Host ""
-				} while ($key -notin @('J','N'))
-
-				# 📝 ALWAYS log response details exactly once
+                # Always log the response details
 				Log-Response-Details -Result $result
 
-				# 👀 Show in console ONLY if user pressed J
+				# Prompt user if they want to see it in console
+				do {
+					Write-Host -NoNewline "Show response details? ("
+					Write-Host -NoNewline "J" -ForegroundColor Yellow
+					Write-Host -NoNewline "/"
+					Write-Host -NoNewline "N" -ForegroundColor Yellow
+					Write-Host "): " -NoNewline
+
+					$startPos = $Host.UI.RawUI.CursorPosition  # remember cursor position
+
+					while ($true) {
+						$key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character).ToUpper()
+
+						if ($key -in @('J','N')) {
+							# valid key pressed -> display in yellow
+							Write-Host $key -ForegroundColor Yellow -NoNewline
+							Write-Host ""  # move to next line
+							break
+						}
+
+						# invalid key -> do nothing, stay on same line
+						$Host.UI.RawUI.CursorPosition = $startPos
+					}
+				} while ($false)  # exits after valid input
+
+				# Show in console only if user pressed J
 				if ($key -eq 'J') {
 					Show-Response-Details -Result $result
 				}
@@ -1179,39 +1250,71 @@ function Run-MainMenu {
         }
 
         '3' {
-            Clear-Screen
-            do {
-                Print-Tree -items $collectionJson.item -NoLog
-                $selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
-                if ($selectedRequestObj -eq 'N') { return }
+			Clear-Screen  # ✅ clear screen before each selection
+			do {
+				Print-Tree -items $collectionJson.item
+				$selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
+				if ($selectedRequestObj -eq 'N') { return }
 
-                $method = $selectedRequestObj.request.method.ToUpper()
-                $url = $selectedRequestObj.request.url.raw
-                $headers = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
-                $body = if ($method -in @("POST","PUT","PATCH") -and $selectedRequestObj.request.body -and $selectedRequestObj.request.body.mode -eq "raw") {
-                    $selectedRequestObj.request.body.raw
-                } else { "" }
+				$method = $selectedRequestObj.request.method.ToUpper()
+				$url = if ($selectedRequestObj.request.url -is [string]) { $selectedRequestObj.request.url }
+					   elseif ($selectedRequestObj.request.url.raw) { $selectedRequestObj.request.url.raw }
+					   elseif ($selectedRequestObj.request.url.href) { $selectedRequestObj.request.url.href }
+				$headers = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
+				$body = if ($method -in @("POST","PUT","PATCH") -and $selectedRequestObj.request.body -and $selectedRequestObj.request.body.mode -eq "raw") {
+					$selectedRequestObj.request.body.raw
+				} else { "" }
 
-                $iterations = 100
-                $totalTime = 0
+				$iterations = 100
+				$totalTime = 0
+				$successfulRequests = 0
 
-                Write-Section "Running Stress Test ($iterations requests)" -NoLog
+				Write-Section "Running Stress Test ($iterations requests)" -NoLog
 
-                $Global:LoggingExecutionOnly = $true
-                for ($i=1; $i -le $iterations; $i++) {
-                    $result = Invoke-Request-With-Metrics -Url $url -Method $method -Headers $headers -Body $body
-                    if ($result.TimeMs -ne "n/a") { $totalTime += $result.TimeMs }
-                    Show-ProgressBar -current $i -total $iterations
-                }
-                $Global:LoggingExecutionOnly = $false
+				$Global:LoggingExecutionOnly = $true
+				for ($i=1; $i -le $iterations; $i++) {
+					$result = Invoke-Request-With-Metrics -Url $url -Method $method -Headers $headers -Body $body
 
-                Write-Section "Stress Test Results" -NoLog
-                $avgTime = [math]::Round($totalTime / $iterations, 2)
-                Log-Message "Average response time: $avgTime ms" -Color Green -NoLog
+					# ✅ Only count successful requests (HTTP 2xx)
+					if ($result.Status -ge 200 -and $result.Status -lt 300) {
+						$totalTime += $result.TimeMs
+						$successfulRequests++
+					} else {
+						# Log reason for skipping inline
+						$reason = if ($result.Status -ne "ERR") { "HTTP $($result.Status)" } else { "TCP: $($result.Tcp)" }
+						# Inline single-line update
+						$percent = [Math]::Floor($i * 100 / $iterations)
+						$filled = [Math]::Floor(10 * $i / $iterations)
+						$bar = ('#' * $filled) + ('-' * (10 - $filled))
+						Write-Host -NoNewline "`r[$bar] $percent% Request #$i skipped: $reason"
+					}
 
-            } while ($true)
-        }
+					# ✅ Progress bar update for all requests
+					if ($result.Status -ge 200 -and $result.Status -lt 300) {
+						$percent = [Math]::Floor($i * 100 / $iterations)
+						$filled = [Math]::Floor(10 * $i / $iterations)
+						$bar = ('#' * $filled) + ('-' * (10 - $filled))
+						Write-Host -NoNewline "`r[$bar] $percent% Request #$i completed"
+					}
 
+					Start-Sleep -Milliseconds 20  # optional: smooth progress effect
+				}
+				Write-Host ""  # newline after progress
+
+				$Global:LoggingExecutionOnly = $false
+
+				Write-Section "Stress Test Results" -NoLog
+
+				if ($successfulRequests -gt 0) {
+					$avgTime = [math]::Round($totalTime / $successfulRequests, 2)
+					Log-Message "Average response time: $avgTime ms ($successfulRequests/$iterations successful requests)" -Color Green -NoLog
+				} else {
+					Log-Message "Stress test aborted: no successful requests to measure." -Color Red -NoLog
+
+				}
+			} while ($true)
+			Clear-Screen  # ✅ clear screen before each selection
+		}
         default { Write-Host "Invalid selection." -ForegroundColor Red }
     }
 }
@@ -1265,7 +1368,7 @@ while ($runAgain) {
 
     Write-Section "Collection Tree"
     Log-Message "Root"
-    Print-Tree -items $collectionJson.item
+    Print-Tree -items $collectionJson.item -NoLog
 
     # ------------------------------------------------------
     # STEP 3 — Main menu
@@ -1277,22 +1380,30 @@ while ($runAgain) {
     # STEP 4 — Restart?
     # ------------------------------------------------------
 
-    Write-Host "Do you want to select another Postman collection? (Y/N): " -NoNewline
+    Write-Host -NoNewline "Do you want to select another Postman collection? ("
+	Write-Host -NoNewline "J" -ForegroundColor Yellow
+	Write-Host -NoNewline "/"
+	Write-Host -NoNewline "N" -ForegroundColor Yellow
+	Write-Host "): " -NoNewline
 
-    while ($true) {
-        $key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character).ToUpper()
-        Write-Host ""
+	$startPos = $Host.UI.RawUI.CursorPosition
 
-        if ($key -eq 'Y') {
-            Clear-Host
-            $runAgain = $true
-            break
-        }
-        elseif ($key -eq 'N') {
-            $runAgain = $false
-            break
-        }
-    }
+	while ($true) {
+		$key = ([string]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown").Character).ToUpper()
+
+		if ($key -in @('J','N')) {
+			Write-Host $key -ForegroundColor Yellow -NoNewline
+			Write-Host ""  # move to next line after valid input
+
+			if ($key -eq 'J') { 
+				Clear-Host
+				$runAgain = $true
+			} else { 
+				$runAgain = $false
+			}
+			break
+		}
+	}
 }
 
 Write-Section "Script finished"
