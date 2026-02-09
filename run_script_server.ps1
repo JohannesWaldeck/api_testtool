@@ -60,6 +60,40 @@ function Log-Message {
     $global:lineCounter++
 }
 
+
+function Log-StressTest-Summary {
+    param (
+        [string]$RequestName,
+        [string]$Method,
+        [string]$Url,
+        [int]$Iterations,
+        [int]$SuccessfulRequests,
+        [int]$FailedRequests,
+        [int]$TotalTimeMs
+    )
+
+    Log-Only "===== STRESS TEST START ====="
+    Log-Only "Request Name : $RequestName"
+    Log-Only "Method       : $Method"
+    Log-Only "URL          : $Url"
+    Log-Only "Iterations   : $Iterations"
+    Log-Only "----------------------------------------"
+
+    if ($SuccessfulRequests -gt 0) {
+        $avgTime = [math]::Round($TotalTimeMs / $SuccessfulRequests, 2)
+        Log-Only "Successful Requests : $SuccessfulRequests"
+        Log-Only "Failed Requests     : $FailedRequests"
+        Log-Only "Average Response    : $avgTime ms"
+    } else {
+        Log-Only "Successful Requests : 0"
+        Log-Only "Failed Requests     : $FailedRequests"
+        Log-Only "Average Response    : n/a"
+    }
+
+    Log-Only "===== STRESS TEST END =====`n"
+}
+
+
 function Write-Section {
     param (
         [string]$Title,
@@ -1151,6 +1185,8 @@ function Log-Response-Details {
 }
 
 
+$failedRequests = 0
+
 # ==========================
 # RUN-MAINMENU FUNCTION
 # ==========================
@@ -1250,70 +1286,101 @@ function Run-MainMenu {
         }
 
         '3' {
-			Clear-Screen  # ✅ clear screen before each selection
+			Clear-Screen
 			do {
 				Print-Tree -items $collectionJson.item
 				$selectedRequestObj = Show-InteractiveTree -items $collectionJson.item
 				if ($selectedRequestObj -eq 'N') { return }
 
 				$method = $selectedRequestObj.request.method.ToUpper()
-				$url = if ($selectedRequestObj.request.url -is [string]) { $selectedRequestObj.request.url }
-					   elseif ($selectedRequestObj.request.url.raw) { $selectedRequestObj.request.url.raw }
-					   elseif ($selectedRequestObj.request.url.href) { $selectedRequestObj.request.url.href }
+				$url = if ($selectedRequestObj.request.url -is [string]) { 
+							$selectedRequestObj.request.url 
+					   } elseif ($selectedRequestObj.request.url.raw) { 
+							$selectedRequestObj.request.url.raw 
+					   } elseif ($selectedRequestObj.request.url.href) { 
+							$selectedRequestObj.request.url.href 
+					   }
+
 				$headers = Resolve-Auth -request $selectedRequestObj -collection $collectionJson
-				$body = if ($method -in @("POST","PUT","PATCH") -and $selectedRequestObj.request.body -and $selectedRequestObj.request.body.mode -eq "raw") {
+				$body = if (
+					$method -in @("POST","PUT","PATCH") -and
+					$selectedRequestObj.request.body -and
+					$selectedRequestObj.request.body.mode -eq "raw"
+				) {
 					$selectedRequestObj.request.body.raw
 				} else { "" }
 
+				# -----------------------------
+				# Stress test config
+				# -----------------------------
 				$iterations = 100
 				$totalTime = 0
 				$successfulRequests = 0
+				$failedRequests = 0
 
 				Write-Section "Running Stress Test ($iterations requests)" -NoLog
 
 				$Global:LoggingExecutionOnly = $true
-				for ($i=1; $i -le $iterations; $i++) {
-					$result = Invoke-Request-With-Metrics -Url $url -Method $method -Headers $headers -Body $body
 
-					# ✅ Only count successful requests (HTTP 2xx)
+				for ($i = 1; $i -le $iterations; $i++) {
+					$result = Invoke-Request-With-Metrics `
+						-Url $url `
+						-Method $method `
+						-Headers $headers `
+						-Body $body
+
 					if ($result.Status -ge 200 -and $result.Status -lt 300) {
 						$totalTime += $result.TimeMs
 						$successfulRequests++
-					} else {
-						# Log reason for skipping inline
-						$reason = if ($result.Status -ne "ERR") { "HTTP $($result.Status)" } else { "TCP: $($result.Tcp)" }
-						# Inline single-line update
-						$percent = [Math]::Floor($i * 100 / $iterations)
-						$filled = [Math]::Floor(10 * $i / $iterations)
-						$bar = ('#' * $filled) + ('-' * (10 - $filled))
-						Write-Host -NoNewline "`r[$bar] $percent% Request #$i skipped: $reason"
-					}
 
-					# ✅ Progress bar update for all requests
-					if ($result.Status -ge 200 -and $result.Status -lt 300) {
-						$percent = [Math]::Floor($i * 100 / $iterations)
-						$filled = [Math]::Floor(10 * $i / $iterations)
-						$bar = ('#' * $filled) + ('-' * (10 - $filled))
-						Write-Host -NoNewline "`r[$bar] $percent% Request #$i completed"
+						# ✅ LOG SUCCESS (same style as FAIL)
+						Log-Only "StressTest OK   #$i → HTTP $($result.Status) ($($result.TimeMs) ms)"
 					}
+					else {
+						$failedRequests++
 
-					Start-Sleep -Milliseconds 20  # optional: smooth progress effect
+						$reason = if ($result.Status -ne "ERR") {
+							"HTTP $($result.Status)"
+						} else {
+							"TCP: $($result.Tcp)"
+						}
+
+						Log-Only "StressTest FAIL #$i → $reason"
+					}
+					# progress bar
+					$percent = [Math]::Floor($i * 100 / $iterations)
+					$filled = [Math]::Floor(10 * $i / $iterations)
+					$bar = ('#' * $filled) + ('-' * (10 - $filled))
+					Write-Host -NoNewline "`r[$bar] $percent% Request #$i completed"
+
+					Start-Sleep -Milliseconds 20
 				}
-				Write-Host ""  # newline after progress
 
+				Write-Host ""   # newline after progress bar
 				$Global:LoggingExecutionOnly = $false
 
-				Write-Section "Stress Test Results" -NoLog
+				# ==================================================
+				# ✅ STRESS TEST SUMMARY (THIS IS THE RIGHT PLACE)
+				# ==================================================
+				Log-StressTest-Summary `
+					-RequestName $selectedRequestObj.name `
+					-Method $method `
+					-Url $url `
+					-Iterations $iterations `
+					-SuccessfulRequests $successfulRequests `
+					-FailedRequests $failedRequests `
+					-TotalTimeMs $totalTime
 
 				if ($successfulRequests -gt 0) {
 					$avgTime = [math]::Round($totalTime / $successfulRequests, 2)
-					Log-Message "Average response time: $avgTime ms ($successfulRequests/$iterations successful requests)" -Color Green -NoLog
+					Log-Message "Average response time: $avgTime ms ($successfulRequests/$iterations successful)" `
+						-Color Green -NoLog
 				} else {
-					Log-Message "Stress test aborted: no successful requests to measure." -Color Red -NoLog
-
+					Log-Message "Stress test aborted: no successful requests." `
+						-Color Red -NoLog
 				}
+
 			} while ($true)
-			Clear-Screen  # ✅ clear screen before each selection
 		}
         default { Write-Host "Invalid selection." -ForegroundColor Red }
     }
