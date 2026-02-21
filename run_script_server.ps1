@@ -71,8 +71,8 @@ function Log-StressTest-Summary {
         [int]$FailedRequests,
         [int]$TotalTimeMs
     )
-
-    Log-Only "===== STRESS TEST START ====="
+	
+	Log-Only "----------------------------------------"
     Log-Only "Request Name : $RequestName"
     Log-Only "Method       : $Method"
     Log-Only "URL          : $Url"
@@ -90,7 +90,7 @@ function Log-StressTest-Summary {
         Log-Only "Average Response    : n/a"
     }
 
-    Log-Only "===== STRESS TEST END =====`n"
+    Log-Only "===== STRESS TEST END ====="
 }
 
 
@@ -1154,7 +1154,7 @@ function Log-Response-Details {
     }
 
     Log-Only "HTTP Status: $($Result.Status)"
-    Log-Only "----------------------------------------"
+    Log-Only "----- Response Details -----"
 
     Log-Only "Response Headers"
     foreach ($key in ($response.Headers.Keys | Sort-Object)) {
@@ -1317,7 +1317,8 @@ function Run-MainMenu {
 				$totalTime = 0
 				$successfulRequests = 0
 				$failedRequests = 0
-
+				
+				Log-Only "===== STRESS TEST START ====="
 				Write-Section "Running Stress Test ($iterations requests)" -NoLog
 
 				$Global:LoggingExecutionOnly = $true
